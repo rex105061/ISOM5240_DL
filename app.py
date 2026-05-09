@@ -1,38 +1,60 @@
-# app.py
-
 import streamlit as st
+import os
+import torch
+
+# ===== 内存优化和稳定性配置 =====
+# 禁用多进程，避免 semaphore 泄漏
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+# 强制使用 CPU（GPU 可能反而有问题）
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+# 设置 torch 的内存优化
+torch.set_num_threads(1)
+
 from transformers import pipeline
 from gtts import gTTS
 import tempfile
-import os
 from PIL import Image
 
-# 配置页面
 st.set_page_config(page_title="Fairy Tale Storyteller", page_icon="🧚")
 st.header("✨ Turn Your Image into a Fairy Tale ✨")
 st.write("For kids 3-10 years old - upload a picture and get a magical story!")
 
-# 加载模型（使用缓存避免重复加载）
+# ===== 模型加载函数（使用更小的模型 + device_map） =====
 @st.cache_resource
 def load_caption_model():
-    # 修复：使用正确的方式加载 image-to-text 模型
-    return pipeline(
-        "image-to-text", 
-        model="Salesforce/blip-image-captioning-base"
-    )
+    try:
+        # 使用更小的配置，强制 CPU
+        return pipeline(
+            "image-to-text", 
+            model="Salesforce/blip-image-captioning-base",
+            device=-1,  # -1 表示使用 CPU
+            model_kwargs={"low_cpu_mem_usage": True}
+        )
+    except Exception as e:
+        st.error(f"Failed to load caption model: {e}")
+        raise
 
 @st.cache_resource
 def load_story_model():
-    return pipeline(
-        "text-generation",
-        model="roneneldan/TinyStories-1M",
-        max_new_tokens=150,
-        do_sample=True,
-        temperature=0.7
-    )
+    try:
+        return pipeline(
+            "text-generation",
+            model="roneneldan/TinyStories-1M",  # 最小的版本
+            max_new_tokens=120,  # 减少生成长度
+            do_sample=True,
+            temperature=0.7,
+            device=-1,  # 强制 CPU
+            model_kwargs={"low_cpu_mem_usage": True}
+        )
+    except Exception as e:
+        st.error(f"Failed to load story model: {e}")
+        raise
 
-# 字数控制函数
-def enforce_word_limit(story, max_words=100):
+def enforce_word_limit(story, min_words=50, max_words=100):
     words = story.split()
     if len(words) > max_words:
         truncated = ' '.join(words[:max_words])
@@ -42,73 +64,84 @@ def enforce_word_limit(story, max_words=100):
         return truncated
     return story
 
-# 图片到描述（修复版）
 def img2text(image_path, captioner):
-    # 确保图片被正确读取
     image = Image.open(image_path)
+    # 压缩图片以减少内存
+    image.thumbnail((512, 512))
     result = captioner(image)
     return result[0]["generated_text"]
 
-# 描述到故事
 def caption_to_story(description, story_model):
     prompt = f"Once upon a time, {description.lower()} "
-    result = story_model(prompt)
+    result = story_model(
+        prompt, 
+        max_new_tokens=120,  # 明确指定，避免使用默认值
+        do_sample=True,
+        temperature=0.7
+    )
     full_story = result[0]['generated_text']
-    # 清理：去掉 prompt 部分
     story = full_story.replace(prompt, "").strip()
-    story = enforce_word_limit(story, 100)
+    # 如果故事太短，添加一个后缀
+    if len(story.split()) < 50:
+        story += " They lived happily ever after. The end."
+    story = enforce_word_limit(story, 50, 100)
     return story
 
-# 故事到语音
 def story_to_audio(story):
     tts = gTTS(text=story, lang='en', slow=False)
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
         tts.save(fp.name)
         return fp.name
 
-# 主界面
+# ===== 主界面 =====
 uploaded_file = st.file_uploader("📷 Choose an image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     # 保存上传的图片
-    with open(uploaded_file.name, "wb") as f:
+    temp_image_path = f"temp_{uploaded_file.name}"
+    with open(temp_image_path, "wb") as f:
         f.write(uploaded_file.getvalue())
     
-    st.image(uploaded_file, caption="Your picture", use_column_width=True)
+    st.image(uploaded_file, caption="Your picture", width=400)
     
-    try:
-        # 加载模型
-        with st.spinner("🖼️ Understanding your picture..."):
-            captioner = load_caption_model()
-            scenario = img2text(uploaded_file.name, captioner)
-        st.caption(f"📝 I see: *{scenario}*")
-        
-        # 生成故事
-        with st.spinner("📖 Writing a fairy tale for you..."):
-            story_model = load_story_model()
-            story = caption_to_story(scenario, story_model)
-        
-        st.subheader("🧚 Your Fairy Tale")
-        st.write(story)
-        
-        # 显示字数统计
-        word_count = len(story.split())
-        st.caption(f"📊 Word count: {word_count} (50-100 words goal)")
-        
-        # 生成语音
-        with st.spinner("🔊 Creating audio..."):
-            audio_path = story_to_audio(story)
-        
-        # 播放按钮
-        if st.button("🔊 Read my story aloud!"):
-            st.audio(audio_path)
-        
-        # 清理临时文件
-        if os.path.exists(audio_path):
-            os.unlink(audio_path)
-        if os.path.exists(uploaded_file.name):
-            os.unlink(uploaded_file.name)
+    # 用按钮触发生成，避免自动加载模型
+    if st.button("✨ Generate Story & Audio ✨", type="primary"):
+        try:
+            # Step 1: 图片理解
+            with st.spinner("🔍 Understanding your picture..."):
+                captioner = load_caption_model()
+                scenario = img2text(temp_image_path, captioner)
+            st.caption(f"📝 I see: *{scenario}*")
             
-    except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        st.info("Please try again with a different image or refresh the page.")
+            # Step 2: 生成故事
+            with st.spinner("📖 Writing your fairy tale..."):
+                story_model = load_story_model()
+                story = caption_to_story(scenario, story_model)
+            
+            st.subheader("🧚 Your Fairy Tale")
+            st.write(story)
+            
+            # Step 3: 字数统计
+            word_count = len(story.split())
+            if 50 <= word_count <= 100:
+                st.success(f"📊 Word count: {word_count} ✅ (Goal: 50-100)")
+            else:
+                st.warning(f"📊 Word count: {word_count} (Ideal range: 50-100)")
+            
+            # Step 4: 生成音频
+            with st.spinner("🔊 Creating audio..."):
+                audio_path = story_to_audio(story)
+            
+            # Play 按钮
+            st.audio(audio_path)
+            
+            # 清理临时文件
+            os.unlink(audio_path)
+            
+        except Exception as e:
+            st.error(f"Something went wrong: {str(e)}")
+            st.info("Try refreshing the page or using a different image.")
+    
+    # 清理图片文件
+    if os.path.exists(temp_image_path):
+        os.unlink(temp_image_path)
