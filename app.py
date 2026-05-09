@@ -25,7 +25,7 @@ def load_caption_model():
 def load_story_model():
     return pipeline(
         "text-generation",
-        model="roneneldan/TinyStories-33M",
+        model="roneneldan/TinyStories-1M",
         max_new_tokens=150,
         do_sample=True,
         temperature=0.7
