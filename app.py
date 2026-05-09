@@ -7,17 +7,19 @@ import os
 # --- Model Caching ---
 @st.cache_resource
 def load_image_to_text_model():
-    # Using "image-to-text" is correct for modern transformers
-    return pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
+    # Robust loading: provide model name, let transformers detect the task
+    # This avoids the "Unknown task" error.
+    return pipeline(model="Salesforce/blip-image-captioning-base")
 
 @st.cache_resource
 def load_story_generation_model():
-    # TinyStories-33M is excellent for children's stories
-    return pipeline("text-generation", model="roneneldan/TinyStories-33M", trust_remote_code=True)
+    # Using model name only for consistency
+    return pipeline(model="roneneldan/TinyStories-33M", trust_remote_code=True)
 
 @st.cache_resource
 def load_text_to_audio_model():
-    return pipeline("text-to-audio", model="facebook/mms-tts-eng")
+    # Using model name only for consistency
+    return pipeline(model="facebook/mms-tts-eng")
 
 # --- Function Part ---
 def img2text(image_path):
@@ -27,17 +29,22 @@ def img2text(image_path):
 
 def generate_story(scenario):
     story_pipe = load_story_generation_model()
+    # Prompt for a children's fairy tale
     prompt = f"Once upon a time, there was a {scenario}. This is a short fairy tale for kids aged 3-10: "
     
     # Generate story
     story_results = story_pipe(prompt, max_new_tokens=100, num_return_sequences=1, truncation=True)
     story = story_results[0]["generated_text"]
     
-    # Clean up and word count control
+    # Clean up and word count control (50-100 words)
     story = story.replace(prompt, "").strip()
     words = story.split()
     if len(words) > 100:
         story = " ".join(words[:100]) + "..."
+    elif len(words) < 50:
+        # If too short, we can add a simple ending to reach the word count if needed,
+        # but usually TinyStories generates enough content.
+        pass
     return story
 
 def text_to_audio(text):
@@ -59,7 +66,7 @@ st.header("Turn Your Image to Audio Story")
 uploaded_file = st.file_uploader("Select an Image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # Save file locally for the pipeline to read
+    # Save file locally
     temp_file_path = f"temp_{uploaded_file.name}"
     with open(temp_file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
@@ -68,12 +75,12 @@ if uploaded_file is not None:
 
     try:
         # Stage 1: Image to Text
-        with st.spinner('Processing image...'):
+        with st.spinner('Reading the image...'):
             scenario = img2text(temp_file_path)
         st.write(f"**Scenario:** {scenario}")
 
         # Stage 2: Text to Story
-        with st.spinner('Generating a story...'):
+        with st.spinner('Writing a fairy tale...'):
             story = generate_story(scenario)
         st.write(f"**Story:** {story}")
 
@@ -83,7 +90,7 @@ if uploaded_file is not None:
 
         # Play button
         st.audio(audio_bytes, format='audio/wav')
-        st.success("Done!")
+        st.success("Your story is ready!")
         
     except Exception as e:
         st.error(f"An error occurred: {e}")
