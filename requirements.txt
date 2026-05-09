@@ -1,5 +1,8 @@
-streamlit
+streamlit==1.35.0
 transformers==4.36.0
-torch
-pillow
-gtts
+torch==2.1.0
+torchvision==0.16.0
+pillow==10.1.0
+gtts==2.5.0
+accelerate==0.25.0
+safetensors==0.4.0
