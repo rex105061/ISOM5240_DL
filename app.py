@@ -1,8 +1,11 @@
+# app.py
+
 import streamlit as st
 from transformers import pipeline
 from gtts import gTTS
 import tempfile
 import os
+from PIL import Image
 
 # 配置页面
 st.set_page_config(page_title="Fairy Tale Storyteller", page_icon="🧚")
@@ -12,13 +15,17 @@ st.write("For kids 3-10 years old - upload a picture and get a magical story!")
 # 加载模型（使用缓存避免重复加载）
 @st.cache_resource
 def load_caption_model():
-    return pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
+    # 修复：使用正确的方式加载 image-to-text 模型
+    return pipeline(
+        "image-to-text", 
+        model="Salesforce/blip-image-captioning-base"
+    )
 
 @st.cache_resource
 def load_story_model():
     return pipeline(
         "text-generation",
-        model="roneneldan/TinyStories-33M",  # 专为儿童故事设计
+        model="roneneldan/TinyStories-33M",
         max_new_tokens=150,
         do_sample=True,
         temperature=0.7
@@ -35,9 +42,11 @@ def enforce_word_limit(story, max_words=100):
         return truncated
     return story
 
-# 图片到描述
+# 图片到描述（修复版）
 def img2text(image_path, captioner):
-    result = captioner(image_path)
+    # 确保图片被正确读取
+    image = Image.open(image_path)
+    result = captioner(image)
     return result[0]["generated_text"]
 
 # 描述到故事
@@ -67,32 +76,39 @@ if uploaded_file is not None:
     
     st.image(uploaded_file, caption="Your picture", use_column_width=True)
     
-    # 加载模型
-    with st.spinner("🖼️ Understanding your picture..."):
-        captioner = load_caption_model()
-        scenario = img2text(uploaded_file.name, captioner)
-    st.caption(f"📝 I see: *{scenario}*")
-    
-    # 生成故事
-    with st.spinner("📖 Writing a fairy tale for you..."):
-        story_model = load_story_model()
-        story = caption_to_story(scenario, story_model)
-    
-    st.subheader("🧚 Your Fairy Tale")
-    st.write(story)
-    
-    # 显示字数统计（调试/教学用）
-    word_count = len(story.split())
-    st.caption(f"📊 Word count: {word_count} (50-100 words goal)")
-    
-    # 生成语音
-    with st.spinner("🔊 Creating audio..."):
-        audio_path = story_to_audio(story)
-    
-    # 播放按钮
-    if st.button("🔊 Read my story aloud!"):
-        st.audio(audio_path)
-    
-    # 清理临时文件
-    os.unlink(audio_path)
-    os.unlink(uploaded_file.name)
+    try:
+        # 加载模型
+        with st.spinner("🖼️ Understanding your picture..."):
+            captioner = load_caption_model()
+            scenario = img2text(uploaded_file.name, captioner)
+        st.caption(f"📝 I see: *{scenario}*")
+        
+        # 生成故事
+        with st.spinner("📖 Writing a fairy tale for you..."):
+            story_model = load_story_model()
+            story = caption_to_story(scenario, story_model)
+        
+        st.subheader("🧚 Your Fairy Tale")
+        st.write(story)
+        
+        # 显示字数统计
+        word_count = len(story.split())
+        st.caption(f"📊 Word count: {word_count} (50-100 words goal)")
+        
+        # 生成语音
+        with st.spinner("🔊 Creating audio..."):
+            audio_path = story_to_audio(story)
+        
+        # 播放按钮
+        if st.button("🔊 Read my story aloud!"):
+            st.audio(audio_path)
+        
+        # 清理临时文件
+        if os.path.exists(audio_path):
+            os.unlink(audio_path)
+        if os.path.exists(uploaded_file.name):
+            os.unlink(uploaded_file.name)
+            
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        st.info("Please try again with a different image or refresh the page.")
