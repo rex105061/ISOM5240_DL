@@ -1,5 +1,4 @@
 
-
 # Program title: Storytelling App
 
 # Import part
